@@ -2,11 +2,9 @@ import json
 import os
 
 import requests
-from datetime import datetime
 from dotenv import load_dotenv
 
-path = os.path.join(os.getcwd(), 'temp_photos')
-upload_report = []
+upload_report = {}
 
 class VKApp:
     def __init__(self, token, version='5.199'):
@@ -29,49 +27,17 @@ class VKApp:
             'extended': 1
         }
         response = requests.get(self._make_request_url('photos.get'), params={**self.params, **params})
-        return response.json()
-
-    def download_profile_photos(self, owner_id: str, count: int = 5):
-        data = self.get_profile_photos(owner_id, count)
-        if not os.path.exists('temp_photos'):
-            os.mkdir('temp_photos')
-
-        """
-        Если внимательно изучить ответ API метода photos.get, то можно увидеть, что
-        самое большое фото хранится в поле orig_photo. Это поле содержит
-        ссылку на оригинальное фото. Если мы будем скачивать оригинальное
-        фото, то мы можем использовать ссылку из этого поля и не нужно перебирать фотографии поля sizes для
-        определения наибольшего размера. Однако, в задании указан формат выходных данных который подразумевает
-        получение максимального размера фотографии именно из sizes. В таком случае более просто код с загрузкой 
-        оригинала я закомментировал, оставлю код для скачивания максимального размера путем вычисления из поля sizes.
-        """
-
-        # for photo in data['response']['items']:
-        #     photo_url = photo['orig_photo']['url']
-        #     photo_name = photo['likes']['count']
-        #     if not os.path.exists(f'{path}/{photo_name}.jpg'):
-        #         with open(f'{path}/{photo_name}.jpg', 'wb') as file:
-        #             file.write(requests.get(photo_url).content)
-        #     else:
-        #         current_date = datetime.now().date().strftime('%d-%m-%Y')
-        #         with open(f'{path}/{photo_name}_{current_date}.jpg', 'wb') as file:
-        #             file.write(requests.get(photo_url).content)
-
-        for photo in data['response']['items']:
+        for photo in response.json()['response']['items']:
             max_size = max(photo['sizes'], key=lambda x: x['width'] + x['height'])
+            created_date = photo['date']
             photo_url = max_size['url']
-            photo_name = photo['likes']['count']
-            if not os.path.exists(f'{path}/{photo_name}.jpg'):
-                with open(f'{path}/{photo_name}.jpg', 'wb') as file:
-                    file.write(requests.get(photo_url).content)
-                    upload_report.append(dict(file_name=file.name.split('/')[-1], size=max_size['type']))
+            photo_name = str(photo['likes']['count'])
+            if photo_name not in upload_report:
+                upload_report[photo_name] = dict(size=max_size['type'], url=photo_url)
             else:
-                current_date = datetime.now().date().strftime('%d-%m-%Y')
-                with open(f'{path}/{photo_name}_{current_date}.jpg', 'wb') as file:
-                    file.write(requests.get(photo_url).content)
-                    upload_report.append(dict(file_name=file.name.split('/')[-1], size=max_size['type']))
-
-        return f'Фотографии: {', '.join(os.listdir(path))}\nсохранены в папке {path}'
+                photo_name = f'{photo_name}_{created_date}'
+                upload_report[photo_name] = dict(size=max_size['type'], url=photo_url)
+        return response.status_code
 
 
 def make_upload_report():
@@ -105,25 +71,21 @@ class YandexDisk:
                      if 200 <= response.status_code < 300
                      else f'Ошибка при создании папки "{folder_name}" код ошибки: {response.status_code}')
 
-    def make_upload_url(self, file_path, overwrite=False):
-        params = {
-            'path': file_path,
-            'overwrite': overwrite
-        }
-        response = requests.get(self._make_request_url('resources/upload'),
-                                params=params,
-                                headers=self.headers)
-        return response.json()['href']
 
     def upload_files(self, folder_name):
         self.make_folder(folder_name)
-        for file in os.listdir(path):
-            url = self.make_upload_url(f'{folder_name}/{file}')
-            with open(os.path.join(path, file), 'rb') as f:
-                uploader = requests.put(url, files={'file': f})
-                if 200 <= uploader.status_code < 300:
-                    print(f'Файл #{os.listdir(path).index(file) + 1} из '
-                          f'{len(os.listdir(path))} загружен в облачную папку "{folder_name}"')
+        counter = 1
+        for photo_name, data in upload_report.items():
+            params = {
+                'path': f'{folder_name}/{photo_name}.jpg',
+                'url': data['url'],
+            }
+            upload_response = requests.post(self._make_request_url('resources/upload'), params=params, headers=self.headers)
+            if 200 <= upload_response.status_code < 300:
+                print(f'Файл "{photo_name}.jpg" {counter} из {len(upload_report)} успешно загружен в облачную папку "{folder_name}"')
+                counter += 1
+            else:
+                print(f'Ошибка при загрузке файла "{photo_name}.jpg" код ошибки: {upload_response.status_code}')
         make_upload_report()
         print('*' * 50)
         return print('Загрузка завершена')
@@ -132,6 +94,6 @@ class YandexDisk:
 if __name__ == "__main__":
     load_dotenv('config.env')
     vk = VKApp(os.getenv('VK_TOKEN'))
-    download_photos = vk.download_profile_photos('ENTER YOUR VK ID')
+    get_photo = vk.get_profile_photos('ENTER VK ID HERE')
     yad = YandexDisk(os.getenv('YANDEX_TOKEN'))
     yad.upload_files('vk_photos')
